@@ -1,0 +1,4 @@
+# temporary files
+*.asv
+*.ipynb_checkpoints*
+*__pycache__*
