@@ -2,3 +2,6 @@
 *.asv
 *.ipynb_checkpoints*
 *__pycache__*
+
+# GitHub Colab sync notebook (will change every time you run it)
+GitHub_GoogleDrive_sync.ipynb
