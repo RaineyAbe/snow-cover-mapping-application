@@ -19,6 +19,7 @@ import xarray as xr
 import ipywidgets as widgets
 from ipywidgets import Layout
 from IPython.display import display, HTML
+import geedim as gd
 
 
 def query_gee_for_imagery_plot_snowline(dataset, sl_df_wgs, aoi_utm):
@@ -52,61 +53,69 @@ def query_gee_for_imagery_plot_snowline(dataset, sl_df_wgs, aoi_utm):
     # -----Reformat AOI for image filtering
     # reproject CRS from AOI to WGS
     aoi_wgs = aoi_utm.to_crs('EPSG:4326')
-    aoi_wgs_buffer = aoi_utm_buffer.to_crs('EPSG:4326')
-    # convert AOI to ee.Geometry.Polygon
-    aoi_wgs_ee = ee.Geometry.Polygon(
-        [[
-            [aoi_wgs.geometry[0].bounds[0], aoi_wgs.geometry[0].bounds[1]],
-            [aoi_wgs.geometry[0].bounds[2], aoi_wgs.geometry[0].bounds[1]],
-            [aoi_wgs.geometry[0].bounds[2], aoi_wgs.geometry[0].bounds[3]],
-            [aoi_wgs.geometry[0].bounds[0], aoi_wgs.geometry[0].bounds[3]],
-            [aoi_wgs.geometry[0].bounds[0], aoi_wgs.geometry[0].bounds[1]]]]
-        )
-    aoi_wgs_buffer_ee = ee.Geometry.Polygon(
-        [[
-            [aoi_wgs_buffer.geometry[0].bounds[0], aoi_wgs_buffer.geometry[0].bounds[1]],
-            [aoi_wgs_buffer.geometry[0].bounds[2], aoi_wgs_buffer.geometry[0].bounds[1]],
-            [aoi_wgs_buffer.geometry[0].bounds[2], aoi_wgs_buffer.geometry[0].bounds[3]],
-            [aoi_wgs_buffer.geometry[0].bounds[0], aoi_wgs_buffer.geometry[0].bounds[3]],
-            [aoi_wgs_buffer.geometry[0].bounds[0], aoi_wgs_buffer.geometry[0].bounds[1]]]]
-        )
+    aoi_buffer_wgs = aoi_utm_buffer.to_crs('EPSG:4326')
+    # prepare AOI for querying geedim (AOI bounding box)
+    region = {'type': 'Polygon',
+              'coordinates': [[[aoi_wgs.geometry.bounds.minx[0], aoi_wgs.geometry.bounds.miny[0]],
+                               [aoi_wgs.geometry.bounds.maxx[0], aoi_wgs.geometry.bounds.miny[0]],
+                               [aoi_wgs.geometry.bounds.maxx[0], aoi_wgs.geometry.bounds.maxy[0]],
+                               [aoi_wgs.geometry.bounds.minx[0], aoi_wgs.geometry.bounds.maxy[0]],
+                               [aoi_wgs.geometry.bounds.minx[0], aoi_wgs.geometry.bounds.miny[0]]
+                               ]]}
+    region_buffer_ee = ee.Geometry.Polygon([[[aoi_buffer_wgs.geometry.bounds.minx[0], aoi_buffer_wgs.geometry.bounds.miny[0]],
+                                              [aoi_buffer_wgs.geometry.bounds.maxx[0], aoi_buffer_wgs.geometry.bounds.miny[0]],
+                                              [aoi_buffer_wgs.geometry.bounds.maxx[0], aoi_buffer_wgs.geometry.bounds.maxy[0]],
+                                              [aoi_buffer_wgs.geometry.bounds.minx[0], aoi_buffer_wgs.geometry.bounds.maxy[0]],
+                                              [aoi_buffer_wgs.geometry.bounds.minx[0], aoi_buffer_wgs.geometry.bounds.miny[0]]
+                                            ]])
 
     # -----Query GEE for imagery
     # print('Querying GEE for ' + dataset + ' imagery...')
     if dataset == 'Landsat':
         # Landsat 8
-        im_col_ee_8 = (ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
-                     .filterDate(ee.Date(str(date_start)[0:10]), ee.Date(str(date_end)[0:10]))
-                     .filterBounds(aoi_wgs_buffer_ee)
-                     )
+        im_col_gd_8 = gd.MaskedCollection.from_name('LANDSAT/LC08/C02/T1_L2').search(start_date=date_start,
+                                                                                     end_date=date_end,
+                                                                                     region=region,
+                                                                                     cloudless_portion=70,
+                                                                                     fill_portion=70)
         # Landsat 9
-        im_col_ee_9 = (ee.ImageCollection('LANDSAT/LC09/C02/T1_L2')
-                     .filterDate(ee.Date(str(date_start)[0:10]), ee.Date(str(date_end)[0:10]))
-                     .filterBounds(aoi_wgs_buffer_ee)
-                     )
-        im_col_ee = im_col_ee_8.merge(im_col_ee_9)
+        im_col_gd_9 = gd.MaskedCollection.from_name('LANDSAT/LC09/C02/T1_L2').search(start_date=date_start,
+                                                                                     end_date=date_end,
+                                                                                     region=region,
+                                                                                     cloudless_portion=70,
+                                                                                     fill_portion=70)
+        im_col_ee = im_col_gd_8.ee_collection.merge(im_col_gd_9.ee_collection)
+
         # apply scaling factors
         def apply_scale_factors(image):
-            opticalBands = image.select('SR_B.').multiply(0.0000275).add(-0.2);
-            thermalBands = image.select('ST_B.*').multiply(0.00341802).add(149.0);
+            opticalBands = image.select('SR_B.').multiply(0.0000275).add(-0.2)
+            thermalBands = image.select('ST_B.*').multiply(0.00341802).add(149.0)
             return image.addBands(opticalBands, None, True).addBands(thermalBands, None, True)
+
         im_col_ee = im_col_ee.map(apply_scale_factors)
         # define how to display image
-        visualization = {'bands': ['SR_B4', 'SR_B3', 'SR_B2'], 'min': 0.0, 'max': 1.0, 'dimensions': 768, 'region': aoi_wgs_buffer_ee}
+        visualization = {'bands': ['SR_B4', 'SR_B3', 'SR_B2'], 'min': 0.0, 'max': 1.0, 'dimensions': 768,
+                         'region': region_buffer_ee}
     elif dataset == 'Sentinel-2_TOA':
-        im_col_ee = (ee.ImageCollection('COPERNICUS/S2_HARMONIZED')
-                     .filterDate(ee.Date(str(date_start)[0:10]), ee.Date(str(date_end)[0:10]))
-                     .filterBounds(aoi_wgs_buffer_ee)
-                     )
+        im_col_gd = gd.MaskedCollection.from_name('COPERNICUS/S2_HARMONIZED').search(start_date=date_start,
+                                                                                     end_date=date_end,
+                                                                                     region=region,
+                                                                                     cloudless_portion=70,
+                                                                                     fill_portion=70)
+        im_col_ee = im_col_gd.ee_collection
         # define how to display image
-        visualization = {'bands': ['B4', 'B3', 'B2'], 'min': 0.0, 'max': 1e4, 'dimensions': 768, 'region': aoi_wgs_buffer_ee}
+        visualization = {'bands': ['B4', 'B3', 'B2'], 'min': 0.0, 'max': 1e4, 'dimensions': 768,
+                         'region': region_buffer_ee}
     elif dataset == 'Sentinel-2_SR':
-        im_col_ee = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
-                     .filterDate(ee.Date(str(date_start)[0:10]), ee.Date(str(date_end)[0:10]))
-                     .filterBounds(aoi_wgs_buffer_ee)
-                     )
+        im_col_gd = gd.MaskedCollection.from_name('COPERNICUS/S2_SR_HARMONIZED').search(start_date=date_start,
+                                                                                        end_date=date_end,
+                                                                                         region=region,
+                                                                                         cloudless_portion=70,
+                                                                                         fill_portion=70)
+        im_col_ee = im_col_gd.ee_collection
         # define how to display image
-        visualization = {'bands': ['B4', 'B3', 'B2'], 'min': 0.0, 'max': 1e4, 'dimensions': 768, 'region': aoi_wgs_buffer_ee}
+        visualization = {'bands': ['B4', 'B3', 'B2'], 'min': 0.0, 'max': 1e4, 'dimensions': 768,
+                         'region': region_buffer_ee}
     else:
         print(
             "'dataset' variable not recognized. Please set to 'Landsat', 'Sentinel-2_TOA', or 'Sentinel-2_SR'. Exiting...")
@@ -114,13 +123,14 @@ def query_gee_for_imagery_plot_snowline(dataset, sl_df_wgs, aoi_utm):
 
     # -----Display image, snowline, and AOI on geemap.Map()
     # Fetch the image URL from Google Earth Engine
-    image_url = im_col_ee.first().clip(aoi_wgs_buffer_ee).getThumbURL(visualization)
+    image_url = im_col_ee.first().clip(region_buffer_ee).getThumbURL(visualization)
     # Fetch the image and convert it to a PIL Image object
     response = requests.get(image_url)
     image_bytes = io.BytesIO(response.content)
     image = Image.open(image_bytes)
 
     return image, aoi_utm_buffer
+
 
 def manual_snowline_filter_plot(sl_est_df, dataset_dict, aoi_utm, ps_im_path):
     """
@@ -169,8 +179,12 @@ def manual_snowline_filter_plot(sl_est_df, dataset_dict, aoi_utm, ps_im_path):
     for i in np.arange(0, len(sl_est_df)):
 
         # grab snowline coordinates
-        sl_X = sl_est_df.iloc[i]['snowlines_coords_X']
-        sl_Y = sl_est_df.iloc[i]['snowlines_coords_Y']
+        if sl_est_df['geometry'].iloc[i] is not None:
+            sl_X = sl_est_df.iloc[i]['geometry'].coords.xy[0]
+            sl_Y = sl_est_df.iloc[i]['geometry'].coords.xy[1]
+        else:
+            sl_X = []
+            sl_Y = []
         # grab snowline dataset
         dataset = sl_est_df.iloc[i]['dataset']
         # grab snowline date
@@ -178,46 +192,55 @@ def manual_snowline_filter_plot(sl_est_df, dataset_dict, aoi_utm, ps_im_path):
         print(dataset + ' ' + str(date))
 
         # plot snowline time series
-        fig1, ax1 = plt.subplots(1, 1, figsize=(8,4))
+        fig1, ax1 = plt.subplots(1, 1, figsize=(8, 4))
         ax1.plot(sl_est_df['datetime'].astype('datetime64[ns]'),
-                  sl_est_df['snowlines_elevs_median_m'], '.k')
+                 sl_est_df['snowline_elevs_median_m'], '.k')
         ax1.plot(np.datetime64(sl_est_df.iloc[i]['datetime']),
-                  sl_est_df.iloc[i]['snowlines_elevs_median_m'],
-                  '*m', markersize=15, label='Current snowline')
+                 sl_est_df.iloc[i]['snowline_elevs_median_m'],
+                 '*m', markersize=15, label='Current snowline')
         ax1.set_ylabel('Median snowline elevation [m]')
         ax1.legend(loc='upper left')
         ax1.grid()
 
         # load and plot image
-        fig2, ax2 = plt.subplots(1, 1, figsize=(10,10))
+        fig2, ax2 = plt.subplots(1, 1, figsize=(10, 10))
         # if PlanetScope, load from file
-        if dataset=='PlanetScope':
-            im_fn = glob.glob(ps_im_path +'*'+str(date).replace('-','')[0:8]+'*.tif')[0]
-            im = rxr.open_rasterio(im_fn)
-            im = xr.where(im!=-9999, im/1e4, np.nan)
-            ax2.imshow(np.dstack([im.data[2], im.data[1], im.data[0]]),
-                    extent=(np.min(im.x.data)/1e3, np.max(im.x.data)/1e3,
-                            np.min(im.y.data)/1e3, np.max(im.y.data)/1e3))
+        if dataset == 'PlanetScope':
+            try:
+                im_fn = glob.glob(ps_im_path + '*' + str(date).replace('-', '')[0:8] + '*.tif')[0]
+                im = rxr.open_rasterio(im_fn)
+                im = xr.where(im != -9999, im / 1e4, np.nan)
+                ax2.imshow(np.dstack([im.data[2], im.data[1], im.data[0]]),
+                           extent=(np.min(im.x.data) / 1e3, np.max(im.x.data) / 1e3,
+                                   np.min(im.y.data) / 1e3, np.max(im.y.data) / 1e3))
+            except:
+                print('Issue opening PlanetScope image, continuing...')
+                continue
         # otherwise, load image thumbnail from GEE
         else:
             # get PIL image object
-            image, aoi_utm_buffer = query_gee_for_imagery_plot_snowline(dataset, sl_est_df.to_crs('EPSG:4326').iloc[i], aoi_utm)
+            image, aoi_utm_buffer = query_gee_for_imagery_plot_snowline(dataset, sl_est_df.to_crs('EPSG:4326').iloc[i],
+                                                                        aoi_utm)
             # plot
             xmin, ymin, xmax, ymax = aoi_utm_buffer[0].bounds
-            ax2.imshow(image, extent=(xmin/1e3, xmax/1e3, ymin/1e3, ymax/1e3))
+            ax2.imshow(image, extent=(xmin / 1e3, xmax / 1e3, ymin / 1e3, ymax / 1e3))
 
-        if len(sl_est_df.iloc[i]['snowlines_coords_X']) > 2:
+        if len(sl_X) > 1:
             ax2.plot(np.divide(sl_X, 1e3), np.divide(sl_Y, 1e3), '.m', markersize=2, label='snowline')
             ax2.legend(loc='best')
         else:
             print('No snowline coordinates detected')
+        # plot AOI
+        ax2.plot(np.divide(aoi_utm.geometry[0].exterior.xy[0], 1e3),
+                 np.divide(aoi_utm.geometry[0].exterior.xy[1], 1e3), '-c', linewidth=2)
         ax2.set_xlabel('Easting [km]')
         ax2.set_ylabel('Northing [km]')
         ax2.set_title(date)
         plt.show()
 
         # create and display checkbox
-        checkbox = widgets.Checkbox(value=False, description='Select '+str(date)[0:10]+' snowline as ELA for '+str(date)[0:4],
+        checkbox = widgets.Checkbox(value=False,
+                                    description='Select ' + str(date)[0:10] + ' snowline as ELA for ' + str(date)[0:4],
                                     indent=False, layout=Layout(width='1000px', height='50px'))
         checkbox.add_class('my-checkbox')
         display(HTML(style))
