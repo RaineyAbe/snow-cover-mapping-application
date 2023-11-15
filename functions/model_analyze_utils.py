@@ -1,5 +1,5 @@
 """
-Utilities for modeling and analyzing snow cover
+Utilities for modeling and analyzing snow cover trends
 Rainey Aberle
 2023
 """
@@ -12,6 +12,10 @@ import os
 from tqdm.auto import tqdm
 import numpy as np
 import xarray as xr
+from sklearn.model_selection import KFold
+from sklearn.inspection import permutation_importance
+from joblib import dump, load
+import matplotlib.pyplot as plt
 
 
 # --------------------------------------------------
@@ -71,7 +75,7 @@ def construct_site_training_data(study_sites_path, site_name, dem):
         except:
             continue
     snowlines_df['datetime'] = pd.to_datetime(snowlines_df['datetime'], format='mixed')
-    snowlines_df['Date'] = snowlines_df['datetime'].dt.date
+    snowlines_df['Date'] = snowlines_df['datetime'].values.astype('datetime64[D]')
     # don't include observations from PlanetScope
     snowlines_df = snowlines_df.loc[snowlines_df['dataset'] != 'PlanetScope']
 
@@ -81,26 +85,19 @@ def construct_site_training_data(study_sites_path, site_name, dem):
     era = pd.read_csv(era_fn)
     era.reset_index(drop=True, inplace=True)
     era['Date'] = pd.to_datetime(era['Date'])
+    era['Date'] = era['Date'].values.astype('datetime64[D]')
 
-    # Calculate yearly statistics
-    snowlines_df['Year'] = snowlines_df['datetime'].dt.year
-    era['Year'] = era['Date'].dt.year
-    aar_min = snowlines_df.groupby('Year')['AAR'].min()
-    ela_max = snowlines_df.groupby('Year')['ELA_from_AAR_m'].max()
-    pdds_max = era.groupby('Year')['Cumulative_Positive_Degree_Days'].max()
-    snowfall_max = era.groupby('Year')['Cumulative_Snowfall_mwe'].max()
-    # use max snowfall from previous year
-    snowfall_max.index = snowfall_max.index + 1
+    # Merge the snowlines and climate DataFrames
+    training_df = pd.merge(snowlines_df, era, on='Date', how='outer')
 
-    # Merge the snowlines and yearly stats DataFrames
-    training_df = pd.merge(aar_min, pdds_max, on='Year', how='outer')
-    training_df = pd.merge(training_df, snowfall_max, on='Year', how='outer')
-    training_df = pd.merge(training_df, ela_max, on='Year', how='outer')
-    training_df.sort_values(by='Year', inplace=True)
-    training_df = training_df.dropna()
-
-    # Add site name column
-    training_df['site_name'] = site_name
+    # Adjust dataframe
+    training_df.sort_values(by='Date', inplace=True)
+    training_df.dropna(inplace=True)
+    training_df.reset_index(drop=True, inplace=True)
+    # select columns
+    cols = ['site_name', 'Date', 'AAR', 'ELA_from_AAR_m',
+            'Cumulative_Positive_Degree_Days', 'Cumulative_Snowfall_mwe']
+    training_df = training_df[cols]
 
     # Load RGI outline
     aoi_fn = glob.glob(study_sites_path + site_name + '/AOIs/*RGI*shp')[0]
@@ -240,10 +237,100 @@ def construct_update_training_data(study_sites_path, training_data_path, trainin
         print('Training data saved to file: ' + os.path.join(training_data_path, training_data_fn))
 
     # -----Adjust dataframe data types
-    training_full_df['datetime'] = pd.to_datetime(training_full_df['datetime'], format='mixed')
+    training_full_df['Date'] = pd.to_datetime(training_full_df['Date'], format='mixed')
     training_full_df[['O1Region', 'O2Region']] = training_full_df[['O1Region', 'O2Region']].astype(float)
 
     return training_full_df
+
+
+# --------------------------------------------------
+def subset_training_data(training_data_df, training_data_subset_path, training_data_subset_fn):
+    """
+
+    Parameters
+    ----------
+    training_data_df: pandas.DataFrame
+        full snowlines training data
+    training_data_subset_path: str
+        path in directory where training data subset will be saved
+    training_data_subset_fn: str
+        file name of training data subset
+
+    Returns
+    -------
+    training_data_subset_df: pandas.DataFrame
+        subset training data
+    """
+
+    # -----Check if training data exist in directory
+    if os.path.exists(os.path.join(training_data_subset_path, training_data_subset_fn)):
+        print('Training data subset exists in directory, loading...')
+        training_data_subset_df = pd.read_csv(os.path.join(training_data_subset_path, training_data_subset_fn))
+    else:
+        print('Constructing training data subset...')
+
+        # -----Grab all unique subregions in RGI outlines
+        unique_subregion_counts = training_data_df[['O1Region', 'O2Region']].value_counts().reset_index(name='count')
+        unique_subregion_counts = unique_subregion_counts.sort_values(by=['O1Region', 'O2Region']).reset_index(drop=True)
+        unique_subregions = unique_subregion_counts[['O1Region', 'O2Region']].values
+
+        # -----Iterate over unique subregions
+        training_data_subset_df = pd.DataFrame()
+        for o1region, o2region in unique_subregions:
+            # grab snowlines with matching names
+            snowlines_subregion = training_data_df.loc[(training_data_df['O1Region'] == o1region)
+                                                       & (training_data_df['O2Region'] == o2region)]
+            # determine subregion name and color for plotting
+            subregion_name, color = determine_subregion_name_color(o1region, o2region)
+            print(subregion_name)
+
+            # Calculate median and quartiles for weekly trends
+            q1, q3 = 0.25, 0.75
+            # set datetime as index
+            snowlines_subregion.index = snowlines_subregion['Date']
+            # add week of year and year columns
+            snowlines_subregion.loc[:, 'Week'] = snowlines_subregion['Date'].dt.isocalendar().week
+            snowlines_subregion.loc[:, 'Year'] = snowlines_subregion['Date'].dt.isocalendar().year.values
+            # calculate weekly median trend
+            weekly = snowlines_subregion.groupby(by='Week')['AAR'].agg(
+                ['median', lambda x: x.quantile(q1), lambda x: x.quantile(q3)])
+            weekly.columns = ['Median', 'Q1', 'Q3']  # Rename the columns for clarity
+            weekly.index = weekly.index.astype(float)
+            # calculate median AAR for minimum AAR week at each site
+            i_min_week = np.argwhere(weekly['Median'].values == np.nanmin(weekly['Median'].values))[0][0]
+            min_week = weekly.index.values[i_min_week]
+
+            # Calculate median AAR for minimum week at all sites
+            site_names = snowlines_subregion['site_name'].drop_duplicates().values
+            for site_name in tqdm(site_names):
+                # subset snowlines to site
+                snowlines_site = snowlines_subregion.loc[snowlines_subregion['site_name'] == site_name]
+                # calculate median AAR each year in minimum week
+                snowlines_site_week = snowlines_site.loc[snowlines_site['Week'] == min_week]
+                snowlines_aars = snowlines_site_week.groupby('Year')['AAR'].median()
+                snowlines_elas = snowlines_site_week.groupby('Year')['ELA_from_AAR_m'].median()
+                # add to dataframe
+                training_data_site = pd.DataFrame({'Year': snowlines_aars.index.values,
+                                                   'AAR': snowlines_aars.values,
+                                                   'ELA_from_AAR_m': snowlines_elas.values
+                                                   })
+                training_data_site['site_name'] = site_name
+                training_data_site['O1Region'] = o1region
+                training_data_site['O2Region'] = o2region
+                training_data_site['Week'] = min_week
+                terrain_columns = ['PA_Ratio', 'Area', 'Zmin', 'Zmax', 'Zmed',
+                                   'Slope', 'Aspect', 'Hypsometric_Index',
+                                   'Hypsometric_Index_Category']
+                training_data_site.loc[:, terrain_columns] = snowlines_site[terrain_columns].iloc[0].values
+                # concatenate to full dataframe
+                training_data_subset_df = pd.concat([training_data_subset_df, training_data_site])
+
+        # save training data subset to file
+        training_data_subset_df.reset_index(drop=True, inplace=True)
+        training_data_subset_df.to_csv(os.path.join(training_data_subset_path, training_data_subset_fn), index=False)
+        print('Training data subset saved to file: ' + os.path.join(training_data_subset_path, training_data_subset_fn))
+
+    return training_data_subset_df
 
 
 # --------------------------------------------------
@@ -253,9 +340,9 @@ def determine_subregion_name_color(o1, o2):
     elif (o1 == 1.0) and (o2 == 2.0):
         subregion_name, color = 'Alaska Range', '#1f78b4'
     elif (o1 == 1.0) and (o2 == 3.0):
-        subregion_name, color = 'Aleutians', '#b2df8a'
+        subregion_name, color = 'Aleutians', '#6d9c43'
     elif (o1 == 1.0) and (o2 == 4.0):
-        subregion_name, color = 'W. Chugach Mtns.', '#33a02c'
+        subregion_name, color = 'W. Chugach Mtns.', '#264708'
     elif (o1 == 1.0) and (o2 == 5.0):
         subregion_name, color = 'St. Elias Mtns.', '#fb9a99'
     elif (o1 == 1.0) and (o2 == 6.0):
@@ -275,3 +362,175 @@ def determine_subregion_name_color(o1, o2):
         color = 'k'
 
     return subregion_name, color
+
+
+# --------------------------------------------------
+def determine_best_model(data, models, model_names, feature_columns, labels, out_path, best_model_fn='best_model.json',
+                         num_folds=10):
+    """
+    Determine the most accurate machine learning model for your input data using K-folds cross-validation.
+
+    Parameters
+    ----------
+    data: pandas.DataFrame
+        contains data for all feature columns and labels
+    models: list of sklearn models
+        list of all models to test
+    model_names: list of str
+        names of each model used for displaying and saving
+    feature_columns: list of str
+        which columns in data to use for model prediction, i.e. the input variable(s)
+    labels: list of str
+        which column(s) in data for model prediction, i.e. the target variable(s)
+    out_path: str
+        path in directory where outputs will be saved
+    best_model_fn: str
+        best model file name to be saved in out_path
+    num_folds: int
+        number of folds (K) to use in K-folds cross-validation.
+
+    Returns
+    -------
+    best_model_retrained: sklearn model
+        most accurate model for your data, retrained using full dataset
+    X: pandas.DataFrame
+        table of features constructed from data
+    y: pandas.DataFrame
+        table of labels constructed from data
+    """
+    # -----Split data into feature columns and labels
+    X = data[feature_columns]
+    y = data[labels]
+
+    # -----Initialize performance metrics
+    abs_err = np.zeros(len(models))  # absolute error [label units]
+
+    # -----Iterate over models
+    for i, (name, model) in enumerate(zip(model_names, models)):
+
+        print(name)
+
+        # Conduct K-Fold cross-validation
+        kfold = KFold(n_splits=num_folds, shuffle=True, random_state=1)
+        abs_err_folds = np.zeros(num_folds)  # absolute error for all folds
+
+        # loop through fold indices
+        j = 0  # fold counter
+        for train_ix, test_ix in kfold.split(X):
+            # split data into training and testing using kfold indices
+            X_train, X_test = X.iloc[train_ix], X.iloc[test_ix]
+            y_train, y_test = np.ravel(y.iloc[train_ix].values), np.ravel(y.iloc[test_ix].values)
+
+            # fit model to X_train and y_train
+            model.fit(X_train, y_train)
+
+            # predict outputs for X_test values
+            y_pred = model.predict(X_test)
+
+            # calculate performance metrics
+            abs_err_folds[j] = np.nanmean(np.abs(y_test - y_pred))
+            j += 1
+
+        # take average performance metrics for all folds
+        abs_err[i] = np.nanmean(abs_err_folds)
+
+        # display performance results
+        print('    Mean absolute error = ' + str(abs_err[i]))
+
+    print(' ')
+
+    # -----Determine best model
+    ibest = np.argwhere(abs_err == np.min(abs_err))[0][0]
+    best_model = models[ibest]
+    best_model_name = model_names[ibest]
+    print('Most accurate classifier: ' + best_model_name)
+
+    # -----Retrain best model with full training dataset and save to file
+    best_model_retrained = best_model.fit(X, y)
+    dump(best_model_retrained, os.path.join(out_path, best_model_fn))
+    print('Most accurate model retrained and saved to file: ' + os.path.join(out_path, best_model_fn))
+
+    return best_model_retrained, X, y
+
+
+# --------------------------------------------------
+def assess_model_feature_importances(model, X, y, feature_columns, feature_columns_display=None, out_path=None,
+                                     importances_fn='model_feature_importances.csv', figure_out_path=None,
+                                     figure_fn='model_feature_importances.png', n_repeats=100, random_state=42):
+    """
+    Assess permutation feature importance for your model and input features and labels.
+    See here for more information: https://scikit-learn.org/stable/modules/permutation_importance.html
+
+    Parameters
+    ----------
+    model: sklearn model
+        model to assess feature importances
+    X: pandas.DataFrame
+        table of features
+    y: pandas.DataFrame
+        table of labels
+    feature_columns: str
+        list of feature names, used for constructing data table and plotting
+    out_path: str
+        path in directory where importance information will be saved
+    importances_fn: str
+        file name for output importances dictionary, saved to out_path
+    figure_out_path: str
+        path in directory where figure will be saved
+    figure_fn: str
+        file name for importances box plot figure, saved to figure_out_path
+    n_repeats: int
+        number of iterations for permutation
+    random_state: int
+        random state used for shuffling each feature
+
+    Returns
+    -------
+    feature_importances: dict
+        results for permutation feature importance
+    """
+
+    # Check input variables
+    if not feature_columns_display:
+        feature_columns_display = feature_columns
+
+    # Calculate feature importances using permutatiion
+    feature_importances = permutation_importance(model, X, y, n_repeats=n_repeats, random_state=random_state, n_jobs=2)
+    # convert to pandas.DataFrame
+    feature_importances_df = pd.DataFrame()
+    for i, column in enumerate(feature_columns):
+        feature_importances_df[column] = feature_importances['importances'][i]
+
+    # plot
+    fig, ax = plt.subplots(1, 1, figsize=(8/5 * len(feature_columns), 6))
+    feature_importances_df.plot(ax=ax,
+                                kind='box',
+                                color=dict(boxes='k', whiskers='k', medians='b', caps='k'),
+                                boxprops=dict(linestyle='-', linewidth=1.5),
+                                flierprops=dict(linestyle='-', linewidth=1.5),
+                                medianprops=dict(linestyle='-', linewidth=1.5),
+                                whiskerprops=dict(linestyle='-', linewidth=1.5),
+                                capprops=dict(linestyle='-', linewidth=1.5),
+                                showfliers=True)
+    ax.set_xticklabels(feature_columns_display)
+    ax.set_ylim(0, np.nanmax(np.ravel(feature_importances['importances'])) * 1.1)
+    ax.set_ylabel('Importance')
+    plt.show()
+
+    # save dataframe to file if out_path is valid
+    if os.path.exists(out_path):
+        feature_importances_fn = os.path.join(out_path, importances_fn)
+        feature_importances_df.to_csv(feature_importances_fn, index=False)
+        print('importances data frame saved to file: ' + feature_importances_fn)
+
+        # save figure to file if figure_out_path is valid
+        if os.path.exists(figure_out_path):
+            fig_fn = os.path.join(figure_out_path, figure_fn)
+            fig.savefig(fig_fn, dpi=300)
+            print('figure saved to file: ' + fig_fn)
+        else:
+            print('Variable figure_out_path not valid path in directory, not saving figure...')
+    else:
+        print('Variable out_path not valid path in directory, not saving output dataframe...')
+
+    return feature_importances

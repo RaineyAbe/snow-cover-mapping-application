@@ -71,19 +71,21 @@ def query_gee_for_imagery_plot_snowline(dataset, sl_df_wgs, aoi_utm):
 
     # -----Query GEE for imagery
     # print('Querying GEE for ' + dataset + ' imagery...')
+    cloudless_portion = 25
+    fill_portion = 70
     if dataset == 'Landsat':
         # Landsat 8
         im_col_gd_8 = gd.MaskedCollection.from_name('LANDSAT/LC08/C02/T1_L2').search(start_date=date_start,
                                                                                      end_date=date_end,
                                                                                      region=region,
-                                                                                     cloudless_portion=70,
-                                                                                     fill_portion=70)
+                                                                                     cloudless_portion=cloudless_portion,
+                                                                                     fill_portion=fill_portion)
         # Landsat 9
         im_col_gd_9 = gd.MaskedCollection.from_name('LANDSAT/LC09/C02/T1_L2').search(start_date=date_start,
                                                                                      end_date=date_end,
                                                                                      region=region,
-                                                                                     cloudless_portion=70,
-                                                                                     fill_portion=70)
+                                                                                     cloudless_portion=cloudless_portion,
+                                                                                     fill_portion=fill_portion)
         im_col_ee = im_col_gd_8.ee_collection.merge(im_col_gd_9.ee_collection)
 
         # apply scaling factors
@@ -100,8 +102,8 @@ def query_gee_for_imagery_plot_snowline(dataset, sl_df_wgs, aoi_utm):
         im_col_gd = gd.MaskedCollection.from_name('COPERNICUS/S2_HARMONIZED').search(start_date=date_start,
                                                                                      end_date=date_end,
                                                                                      region=region,
-                                                                                     cloudless_portion=70,
-                                                                                     fill_portion=70)
+                                                                                     cloudless_portion=cloudless_portion,
+                                                                                     fill_portion=fill_portion)
         im_col_ee = im_col_gd.ee_collection
         # define how to display image
         visualization = {'bands': ['B4', 'B3', 'B2'], 'min': 0.0, 'max': 1e4, 'dimensions': 768,
@@ -109,9 +111,9 @@ def query_gee_for_imagery_plot_snowline(dataset, sl_df_wgs, aoi_utm):
     elif dataset == 'Sentinel-2_SR':
         im_col_gd = gd.MaskedCollection.from_name('COPERNICUS/S2_SR_HARMONIZED').search(start_date=date_start,
                                                                                         end_date=date_end,
-                                                                                         region=region,
-                                                                                         cloudless_portion=70,
-                                                                                         fill_portion=70)
+                                                                                        region=region,
+                                                                                        cloudless_portion=cloudless_portion,
+                                                                                        fill_portion=fill_portion)
         im_col_ee = im_col_gd.ee_collection
         # define how to display image
         visualization = {'bands': ['B4', 'B3', 'B2'], 'min': 0.0, 'max': 1e4, 'dimensions': 768,
@@ -130,7 +132,6 @@ def query_gee_for_imagery_plot_snowline(dataset, sl_df_wgs, aoi_utm):
     image = Image.open(image_bytes)
 
     return image, aoi_buffer_wgs
-
 
 def manual_snowline_filter_plot(sl_est_df, dataset_dict, aoi_utm, ps_im_path):
     """
@@ -217,6 +218,7 @@ def manual_snowline_filter_plot(sl_est_df, dataset_dict, aoi_utm, ps_im_path):
                                    np.min(im.y.data), np.max(im.y.data)))
             except:
                 print('Issue opening PlanetScope image, continuing...')
+                plt.close()
                 continue
         # otherwise, load image thumbnail from GEE
         else:
