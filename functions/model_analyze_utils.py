@@ -16,6 +16,7 @@ from sklearn.model_selection import KFold
 from sklearn.inspection import permutation_importance
 from joblib import dump, load
 import matplotlib.pyplot as plt
+import sklearn
 
 
 # --------------------------------------------------
@@ -403,7 +404,7 @@ def determine_best_model(data, models, model_names, feature_columns, labels, out
     y = data[labels]
 
     # -----Initialize performance metrics
-    abs_err = np.zeros(len(models))  # absolute error [label units]
+    accuracy_scores = np.zeros(len(models))
 
     # -----Iterate over models
     for i, (name, model) in enumerate(zip(model_names, models)):
@@ -412,7 +413,7 @@ def determine_best_model(data, models, model_names, feature_columns, labels, out
 
         # Conduct K-Fold cross-validation
         kfold = KFold(n_splits=num_folds, shuffle=True, random_state=1)
-        abs_err_folds = np.zeros(num_folds)  # absolute error for all folds
+        accuracy_scores_folds = np.zeros(num_folds)  # accuracy score for all folds
 
         # loop through fold indices
         j = 0  # fold counter
@@ -428,22 +429,24 @@ def determine_best_model(data, models, model_names, feature_columns, labels, out
             y_pred = model.predict(X_test)
 
             # calculate performance metrics
-            abs_err_folds[j] = np.nanmean(np.abs(y_test - y_pred))
+            accuracy_scores_folds[j] = sklearn.metrics.accuracy_score(y_test, y_pred)
+
             j += 1
 
         # take average performance metrics for all folds
-        abs_err[i] = np.nanmean(abs_err_folds)
+        accuracy_scores[i] = np.nanmean(accuracy_scores_folds)
 
         # display performance results
-        print('    Mean absolute error = ' + str(abs_err[i]))
+        print('    Mean accuracy score = ' + str(accuracy_scores[i]))
 
     print(' ')
 
     # -----Determine best model
-    ibest = np.argwhere(abs_err == np.min(abs_err))[0][0]
+    ibest = np.argwhere(accuracy_scores == np.min(accuracy_scores))[0][0]
     best_model = models[ibest]
     best_model_name = model_names[ibest]
     print('Most accurate classifier: ' + best_model_name)
+    print('Mean accuracy score = ', np.min(accuracy_scores))
 
     # -----Retrain best model with full training dataset and save to file
     best_model_retrained = best_model.fit(X, y)
