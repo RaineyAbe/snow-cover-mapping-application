@@ -87,9 +87,22 @@ def construct_site_training_data(study_sites_path, site_name, dem):
     era.reset_index(drop=True, inplace=True)
     era['Date'] = pd.to_datetime(era['Date'])
     era['Date'] = era['Date'].values.astype('datetime64[D]')
+    # Calculate mean annual temperature range and max. precipitation
+    annual_min_air_temp_mean = np.nanmean(
+        era.groupby(era['Date'].dt.year)['Temperature_Celsius_Adjusted'].min().values)
+    annual_max_air_temp_mean = np.nanmean(
+        era.groupby(era['Date'].dt.year)['Temperature_Celsius_Adjusted'].max().values)
+    era['Water_Year'] = era['Date'].apply(
+        lambda x: x.year if x.month >= 10 else x.year - 1)  # add a water year column
+    era['Cumulative_Precipitation_Meters'] = era.groupby(era['Water_Year'])[
+        'Precipitation_Meters'].cumsum()
+    annual_max_precip_mean = np.nanmean(
+        era.groupby(era['Date'].dt.year)['Cumulative_Precipitation_Meters'].max().values)
 
     # Merge the snowlines and climate DataFrames
     training_df = pd.merge(snowlines_df, era, on='Date', how='outer')
+    training_df['Mean_Annual_Air_Temp_Range'] = annual_max_air_temp_mean - annual_min_air_temp_mean
+    training_df['Mean_Annual_Precipitation_Max'] = annual_max_precip_mean
 
     # Adjust dataframe
     training_df.sort_values(by='Date', inplace=True)
@@ -97,7 +110,8 @@ def construct_site_training_data(study_sites_path, site_name, dem):
     training_df.reset_index(drop=True, inplace=True)
     # select columns
     cols = ['site_name', 'Date', 'AAR', 'ELA_from_AAR_m',
-            'Cumulative_Positive_Degree_Days', 'Cumulative_Snowfall_mwe']
+            'Cumulative_Positive_Degree_Days', 'Cumulative_Snowfall_mwe',
+            'Mean_Annual_Air_Temp_Range', 'Mean_Annual_Precipitation_Max']
     training_df = training_df[cols]
 
     # Load RGI outline
@@ -306,25 +320,10 @@ def subset_training_data(training_data_df, training_data_subset_path, training_d
             for site_name in tqdm(site_names):
                 # subset snowlines to site
                 snowlines_site = snowlines_subregion.loc[snowlines_subregion['site_name'] == site_name]
-                # calculate median AAR each year in minimum week
+                # grab rows for minimum AAR week
                 snowlines_site_week = snowlines_site.loc[snowlines_site['Week'] == min_week]
-                snowlines_aars = snowlines_site_week.groupby('Year')['AAR'].median()
-                snowlines_elas = snowlines_site_week.groupby('Year')['ELA_from_AAR_m'].median()
-                # add to dataframe
-                training_data_site = pd.DataFrame({'Year': snowlines_aars.index.values,
-                                                   'AAR': snowlines_aars.values,
-                                                   'ELA_from_AAR_m': snowlines_elas.values
-                                                   })
-                training_data_site['site_name'] = site_name
-                training_data_site['O1Region'] = o1region
-                training_data_site['O2Region'] = o2region
-                training_data_site['Week'] = min_week
-                terrain_columns = ['PA_Ratio', 'Area', 'Zmin', 'Zmax', 'Zmed',
-                                   'Slope', 'Aspect', 'Hypsometric_Index',
-                                   'Hypsometric_Index_Category']
-                training_data_site.loc[:, terrain_columns] = snowlines_site[terrain_columns].iloc[0].values
                 # concatenate to full dataframe
-                training_data_subset_df = pd.concat([training_data_subset_df, training_data_site])
+                training_data_subset_df = pd.concat([training_data_subset_df, snowlines_site_week])
 
         # save training data subset to file
         training_data_subset_df.reset_index(drop=True, inplace=True)
@@ -366,7 +365,7 @@ def determine_subregion_name_color(o1, o2):
 
 
 # --------------------------------------------------
-def determine_best_model(data, models, model_names, feature_columns, labels, out_path, best_model_fn='best_model.json',
+def determine_best_model(data, models, model_names, feature_columns, labels, out_path, best_model_fn='best_model.joblib',
                          num_folds=10):
     """
     Determine the most accurate machine learning model for your input data using K-folds cross-validation.
@@ -404,7 +403,8 @@ def determine_best_model(data, models, model_names, feature_columns, labels, out
     y = data[labels]
 
     # -----Initialize performance metrics
-    accuracy_scores = np.zeros(len(models))
+    # accuracy_scores = np.zeros(len(models)) # only for discrete classes
+    abs_errs = np.zeros(len(models))
 
     # -----Iterate over models
     for i, (name, model) in enumerate(zip(model_names, models)):
@@ -413,7 +413,7 @@ def determine_best_model(data, models, model_names, feature_columns, labels, out
 
         # Conduct K-Fold cross-validation
         kfold = KFold(n_splits=num_folds, shuffle=True, random_state=1)
-        accuracy_scores_folds = np.zeros(num_folds)  # accuracy score for all folds
+        abs_errs_folds = np.zeros(num_folds)  # accuracy score for all folds
 
         # loop through fold indices
         j = 0  # fold counter
@@ -429,24 +429,24 @@ def determine_best_model(data, models, model_names, feature_columns, labels, out
             y_pred = model.predict(X_test)
 
             # calculate performance metrics
-            accuracy_scores_folds[j] = sklearn.metrics.accuracy_score(y_test, y_pred)
+            abs_errs_folds[j] = np.nanmean(np.abs(y_pred - y_test))
 
             j += 1
 
         # take average performance metrics for all folds
-        accuracy_scores[i] = np.nanmean(accuracy_scores_folds)
+        abs_errs[i] = np.nanmean(abs_errs_folds)
 
         # display performance results
-        print('    Mean accuracy score = ' + str(accuracy_scores[i]))
+        print('    Mean absolute error = ' + str(abs_errs[i]))
 
     print(' ')
 
     # -----Determine best model
-    ibest = np.argwhere(accuracy_scores == np.min(accuracy_scores))[0][0]
+    ibest = np.argwhere(abs_errs == np.min(abs_errs))[0][0]
     best_model = models[ibest]
     best_model_name = model_names[ibest]
     print('Most accurate classifier: ' + best_model_name)
-    print('Mean accuracy score = ', np.min(accuracy_scores))
+    print('Mean absolute error = ', np.min(abs_errs))
 
     # -----Retrain best model with full training dataset and save to file
     best_model_retrained = best_model.fit(X, y)
@@ -505,7 +505,8 @@ def assess_model_feature_importances(model, X, y, feature_columns, feature_colum
         feature_importances_df[column] = feature_importances['importances'][i]
 
     # plot
-    fig, ax = plt.subplots(1, 1, figsize=(8/5 * len(feature_columns), 6))
+    plt.rcParams.update({'font.size': 12, 'font.sans-serif': 'Arial'})
+    fig, ax = plt.subplots(1, 1, figsize=(6/5 * len(feature_columns), 6))
     feature_importances_df.plot(ax=ax,
                                 kind='box',
                                 color=dict(boxes='k', whiskers='k', medians='b', caps='k'),
@@ -515,9 +516,10 @@ def assess_model_feature_importances(model, X, y, feature_columns, feature_colum
                                 whiskerprops=dict(linestyle='-', linewidth=1.5),
                                 capprops=dict(linestyle='-', linewidth=1.5),
                                 showfliers=True)
-    ax.set_xticklabels(feature_columns_display)
+    ax.set_xticklabels(feature_columns_display, rotation=90)
     ax.set_ylim(0, np.nanmax(np.ravel(feature_importances['importances'])) * 1.1)
     ax.set_ylabel('Importance')
+    ax.grid()
     plt.show()
 
     # save dataframe to file if out_path is valid
@@ -529,7 +531,7 @@ def assess_model_feature_importances(model, X, y, feature_columns, feature_colum
         # save figure to file if figure_out_path is valid
         if os.path.exists(figure_out_path):
             fig_fn = os.path.join(figure_out_path, figure_fn)
-            fig.savefig(fig_fn, dpi=300)
+            fig.savefig(fig_fn, dpi=300, bbox_inches='tight')
             print('figure saved to file: ' + fig_fn)
         else:
             print('Variable figure_out_path not valid path in directory, not saving figure...')
