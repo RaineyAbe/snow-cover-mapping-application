@@ -12,6 +12,7 @@ import os
 from tqdm.auto import tqdm
 import numpy as np
 import xarray as xr
+import rioxarray as rxr
 from sklearn.model_selection import KFold
 from sklearn.inspection import permutation_importance
 from joblib import dump, load
@@ -67,21 +68,19 @@ def construct_site_training_data(study_sites_path, site_name, dem):
 
     # Load snowlines
     snowlines_df = pd.DataFrame()
-    snowlines_path = os.path.join(study_sites_path, site_name, 'imagery', 'snowlines')
-    snowline_fns = glob.glob(snowlines_path + '/*.csv')
-    for snowline_fn in snowline_fns:
-        try:
-            snowline = pd.read_csv(snowline_fn)
-            snowlines_df = pd.concat([snowlines_df, snowline])
-        except:
-            continue
-    snowlines_df['datetime'] = pd.to_datetime(snowlines_df['datetime'], format='mixed')
+    snowlines_path = os.path.join(study_sites_path, site_name)
+    snowline_fns = glob.glob(os.path.join(snowlines_path, '*snowlines*.csv'))
+    if len(snowline_fns) == 0:
+        print('No snowlines found, continuing...')
+        return None
+    snowlines_df = pd.read_csv(snowline_fns[0])
+    snowlines_df['datetime'] = pd.to_datetime(snowlines_df['datetime'])
     snowlines_df['Date'] = snowlines_df['datetime'].values.astype('datetime64[D]')
     # don't include observations from PlanetScope
     snowlines_df = snowlines_df.loc[snowlines_df['dataset'] != 'PlanetScope']
 
     # Load ERA data
-    era_fns = glob.glob(study_sites_path + site_name + '/ERA/*.csv')
+    era_fns = glob.glob(os.path.join(study_sites_path, site_name, 'ERA', '*.csv'))
     era_fn = max(era_fns, key=os.path.getctime)
     era = pd.read_csv(era_fn)
     era.reset_index(drop=True, inplace=True)
@@ -115,7 +114,7 @@ def construct_site_training_data(study_sites_path, site_name, dem):
     training_df = training_df[cols]
 
     # Load RGI outline
-    aoi_fn = glob.glob(study_sites_path + site_name + '/AOIs/*RGI*shp')[0]
+    aoi_fn = glob.glob(os.path.join(study_sites_path, site_name, 'AOIs', '*RGI*shp'))[0]
     aoi = gpd.read_file(aoi_fn)
     # reproject to optimal utm zone
     aoi_centroid = [aoi.geometry[0].centroid.xy[0][0],
@@ -194,8 +193,8 @@ def construct_update_training_data(study_sites_path, training_data_path, trainin
     # -----Grab list of site names for constructing training data
     site_names = sorted(os.listdir(study_sites_path))
     # only include sites with snowlines and ERA data
-    site_names = [x for x in site_names if len(glob.glob(study_sites_path + x + '/imagery/snowlines/*.csv')) > 0]
-    site_names = [x for x in site_names if len(glob.glob(study_sites_path + x + '/ERA/*.csv')) > 0]
+    site_names = [x for x in site_names if len(glob.glob(os.path.join(study_sites_path, x, '*snowlines*.csv'))) > 0]
+    site_names = [x for x in site_names if len(glob.glob(os.path.join(study_sites_path, x, 'ERA', '*.csv'))) > 0]
     print('Number of sites in file = ' + str(len(site_names)))
 
     # -----Check if training data already exist in directory
@@ -233,7 +232,7 @@ def construct_update_training_data(study_sites_path, training_data_path, trainin
         # Initialize dataframe for full training dataset
         training_full_df = pd.DataFrame()
         # Iterate over site names
-        for site_name in tqdm(site_names):
+        for site_name in tqdm(site_names[0:5]):
             print(site_name)
             # Load DEM from file
             dem_fns = glob.glob(os.path.join(study_sites_path, site_name, 'DEMs', '*.tif'))
@@ -241,9 +240,11 @@ def construct_update_training_data(study_sites_path, training_data_path, trainin
                 dem_fn = [x for x in dem_fns if '_geoid' in x][0]
             else:
                 dem_fn = dem_fns[0]
-            dem = xr.open_dataset(dem_fn)
+            dem = rxr.open_rasterio(dem_fn)
+            # convert to dataset
+            dem_ds = dem.to_dataset(name='elevation')
             # Construct training data for site
-            training_df = construct_site_training_data(study_sites_path, site_name, dem)
+            training_df = construct_site_training_data(study_sites_path, site_name, dem_ds)
             # Compile and concatenate to training_df
             training_full_df = pd.concat([training_full_df, training_df])
         # Save training data to file
@@ -252,7 +253,7 @@ def construct_update_training_data(study_sites_path, training_data_path, trainin
         print('Training data saved to file: ' + os.path.join(training_data_path, training_data_fn))
 
     # -----Adjust dataframe data types
-    training_full_df['Date'] = pd.to_datetime(training_full_df['Date'], format='mixed')
+    training_full_df['Date'] = pd.to_datetime(training_full_df['Date'])
     training_full_df[['O1Region', 'O2Region']] = training_full_df[['O1Region', 'O2Region']].astype(float)
 
     return training_full_df
@@ -365,8 +366,9 @@ def determine_subregion_name_color(o1, o2):
 
 
 # --------------------------------------------------
-def determine_best_model(data, models, model_names, feature_columns, labels, out_path, best_model_fn='best_model.joblib',
-                         num_folds=10):
+def determine_best_model(data, models, model_names, feature_columns, labels, out_path,
+                         best_model_fn='best_model.joblib', save_performances=False,
+                         performances_fn='model_performances.csv', num_folds=10):
     """
     Determine the most accurate machine learning model for your input data using K-folds cross-validation.
 
@@ -386,6 +388,10 @@ def determine_best_model(data, models, model_names, feature_columns, labels, out
         path in directory where outputs will be saved
     best_model_fn: str
         best model file name to be saved in out_path
+    save_performances: bool
+        whether to save data table of performance metrics for each model
+    performances_fn: str
+        file name for output performances CSV (saved automatically to out_path)
     num_folds: int
         number of folds (K) to use in K-folds cross-validation.
 
@@ -402,9 +408,14 @@ def determine_best_model(data, models, model_names, feature_columns, labels, out
     X = data[feature_columns]
     y = data[labels]
 
-    # -----Initialize performance metrics
-    # accuracy_scores = np.zeros(len(models)) # only for discrete classes
-    abs_errs = np.zeros(len(models))
+    # -----Initialize evaluation metrics
+    # NOTE: These metrics are for Regression models. If you are using Classification or Clustering models, use other
+    # metrics. See here for more info: https://scikit-learn.org/stable/modules/model_evaluation.html
+    mean_abs_err = np.zeros(len(models))
+    mean_sq_err = np.zeros(len(models))
+    mean_abs_percentage_err = np.zeros(len(models))
+    max_err = np.zeros(len(models))
+    rsq = np.zeros(len(models))
 
     # -----Iterate over models
     for i, (name, model) in enumerate(zip(model_names, models)):
@@ -413,7 +424,11 @@ def determine_best_model(data, models, model_names, feature_columns, labels, out
 
         # Conduct K-Fold cross-validation
         kfold = KFold(n_splits=num_folds, shuffle=True, random_state=1)
-        abs_errs_folds = np.zeros(num_folds)  # accuracy score for all folds
+        mean_abs_err_folds = np.zeros(num_folds)
+        mean_sq_err_folds = np.zeros(num_folds)
+        mean_abs_percentage_err_folds = np.zeros(num_folds)
+        max_err_folds = np.zeros(num_folds)
+        rsq_folds = np.zeros(num_folds)
 
         # loop through fold indices
         j = 0  # fold counter
@@ -428,25 +443,44 @@ def determine_best_model(data, models, model_names, feature_columns, labels, out
             # predict outputs for X_test values
             y_pred = model.predict(X_test)
 
-            # calculate performance metrics
-            abs_errs_folds[j] = np.nanmean(np.abs(y_pred - y_test))
+            # calculate evaluation metrics
+            mean_abs_err_folds[j] = sklearn.metrics.mean_absolute_error(y_test, y_pred)
+            mean_sq_err_folds[j] = sklearn.metrics.mean_squared_error(y_test, y_pred)
+            mean_abs_percentage_err_folds[j] = sklearn.metrics.mean_absolute_percentage_error(y_test, y_pred)
+            max_err_folds[j] = sklearn.metrics.max_error(y_test, y_pred)
+            rsq_folds = sklearn.metrics.r2_score(y_test, y_pred)
 
             j += 1
 
-        # take average performance metrics for all folds
-        abs_errs[i] = np.nanmean(abs_errs_folds)
+        # take mean of evaluation metrics for all folds
+        mean_abs_err[i] = np.nanmean(mean_abs_err_folds)
+        mean_sq_err[i] = np.nanmean(mean_sq_err_folds)
+        mean_abs_percentage_err[i] = np.nanmean(rsq_folds)
+        max_err[i] = np.nanmean(max_err_folds)
+        rsq[i] = np.nanmean(rsq_folds)
 
         # display performance results
-        print('    Mean absolute error = ' + str(abs_errs[i]))
+        print('    Mean absolute error = ' + str(mean_abs_err[i]))
 
     print(' ')
 
+    # -----Save performances from all models
+    if save_performances:
+        performances_df = pd.DataFrame({'Model': model_names,
+                                        'Mean absolute error': mean_abs_err,
+                                        'Mean squared error': mean_sq_err,
+                                        'Mean absolute percentage error': mean_abs_percentage_err,
+                                        'Maximum error': max_err,
+                                        'R^2': rsq})
+        performances_df.to_csv(os.path.join(out_path, performances_fn), index=False)
+        print('Evaluation metrics for all models saved to file:', os.path.join(out_path, performances_fn))
+
     # -----Determine best model
-    ibest = np.argwhere(abs_errs == np.min(abs_errs))[0][0]
+    ibest = np.argwhere(mean_abs_err == np.min(mean_abs_err))[0][0]
     best_model = models[ibest]
     best_model_name = model_names[ibest]
     print('Most accurate classifier: ' + best_model_name)
-    print('Mean absolute error = ', np.min(abs_errs))
+    print('Mean absolute error = ', np.min(mean_abs_err))
 
     # -----Retrain best model with full training dataset and save to file
     best_model_retrained = best_model.fit(X, y)
