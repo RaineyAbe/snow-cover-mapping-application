@@ -48,6 +48,37 @@ def convert_wgs_to_utm(lon: float, lat: float):
 
 
 # --------------------------------------------------
+def determine_subregion_name_color(o1, o2):
+    if (o1 == 1.0) and (o2 == 1.0):
+        subregion_name, color = 'Brooks Range', 'c'
+    elif (o1 == 1.0) and (o2 == 2.0):
+        subregion_name, color = 'Alaska Range', '#1f78b4'
+    elif (o1 == 1.0) and (o2 == 3.0):
+        subregion_name, color = 'Aleutians', '#6d9c43'
+    elif (o1 == 1.0) and (o2 == 4.0):
+        subregion_name, color = 'W. Chugach Mtns.', '#264708'
+    elif (o1 == 1.0) and (o2 == 5.0):
+        subregion_name, color = 'St. Elias Mtns.', '#fb9a99'
+    elif (o1 == 1.0) and (o2 == 6.0):
+        subregion_name, color = 'N. Coast Ranges', '#e31a1c'
+    elif (o1 == 2.0) and (o2 == 1.0):
+        subregion_name, color = 'N. Rockies', '#cab2d6'
+    elif (o1 == 2.0) and (o2 == 2.0):
+        subregion_name, color = 'N. Cascades', '#fdbf6f'
+    elif (o1 == 2.0) and (o2 == 3.0):
+        subregion_name, color = 'C. Rockies', '#9657d9'
+    elif (o1 == 2.0) and (o2 == 4.0):
+        subregion_name, color = 'S. Cascades', '#ff7f00'
+    elif (o1 == 2.0) and (o2 == 5.0):
+        subregion_name, color = 'S. Rockies', '#6a3d9a'
+    else:
+        subregion_name = 'O1:' + o1 + ' O2:' + o2
+        color = 'k'
+
+    return subregion_name, color
+
+
+# --------------------------------------------------
 def construct_site_training_data(study_sites_path, site_name, dem):
     """
 
@@ -173,199 +204,6 @@ def construct_site_training_data(study_sites_path, site_name, dem):
 
 
 # --------------------------------------------------
-def construct_update_training_data(study_sites_path, training_data_path, training_data_fn):
-    """
-
-    Parameters
-    ----------
-    study_sites_path: str, os.path
-        path to folder containing study sites
-    training_data_path: str, os.path
-        path where training data is located and/or will be saved
-    training_data_fn: str
-        name of training data CSV file
-
-    Returns
-    -------
-    training_data_full_df: pandas.DataFrame
-        data table of training data for all sites
-    """
-    # -----Grab list of site names for constructing training data
-    site_names = sorted(os.listdir(study_sites_path))
-    # only include sites with snowlines and ERA data
-    site_names = [x for x in site_names if len(glob.glob(os.path.join(study_sites_path, x, '*snowlines*.csv'))) > 0]
-    site_names = [x for x in site_names if len(glob.glob(os.path.join(study_sites_path, x, 'ERA', '*.csv'))) > 0]
-    print('Number of sites in file = ' + str(len(site_names)))
-
-    # -----Check if training data already exist in directory
-    if os.path.exists(os.path.join(training_data_path, training_data_fn)):
-        # Load training data from file
-        print('Training dataset already exists in directory, loading...')
-        training_full_df = pd.read_csv(os.path.join(training_data_path, training_data_fn))
-        # Check if new sites need to be added to training data
-        new_site_names = [site_name for site_name in site_names if
-                          site_name not in training_full_df['site_name'].drop_duplicates().values]
-        if len(new_site_names) > 0:
-            print('Adding new sites to training dataset...')
-            # Iterate over new site names
-            for new_site_name in tqdm(new_site_names):
-                print(new_site_name)
-                # Load DEM from file
-                dem_fns = glob.glob(os.path.join(study_sites_path, new_site_name, 'DEMs', '*.tif'))
-                if 'ArcticDEM' in dem_fns[0]:
-                    dem_fn = [x for x in dem_fns if '_geoid' in x][0]
-                else:
-                    dem_fn = dem_fns[0]
-                dem = xr.open_dataset(dem_fn)
-                # Construct training data for site
-                training_df = construct_site_training_data(study_sites_path, new_site_name, dem)
-                # Compile and concatenate to training_df
-                training_full_df = pd.concat([training_full_df, training_df])
-            # Save training data to file
-            training_full_df.reset_index(drop=True, inplace=True)
-            training_full_df.to_csv(os.path.join(training_data_path, training_data_fn), index=False)
-            print('Training data re-saved to file: ' + os.path.join(training_data_path, training_data_fn))
-
-    else:
-
-        print('Constructing training dataset...')
-        # Initialize dataframe for full training dataset
-        training_full_df = pd.DataFrame()
-        # Iterate over site names
-        for site_name in tqdm(site_names[0:5]):
-            print(site_name)
-            # Load DEM from file
-            dem_fns = glob.glob(os.path.join(study_sites_path, site_name, 'DEMs', '*.tif'))
-            if 'ArcticDEM' in dem_fns[0]:
-                dem_fn = [x for x in dem_fns if '_geoid' in x][0]
-            else:
-                dem_fn = dem_fns[0]
-            dem = rxr.open_rasterio(dem_fn)
-            # convert to dataset
-            dem_ds = dem.to_dataset(name='elevation')
-            # Construct training data for site
-            training_df = construct_site_training_data(study_sites_path, site_name, dem_ds)
-            # Compile and concatenate to training_df
-            training_full_df = pd.concat([training_full_df, training_df])
-        # Save training data to file
-        training_full_df.reset_index(drop=True, inplace=True)
-        training_full_df.to_csv(os.path.join(training_data_path, training_data_fn), index=False)
-        print('Training data saved to file: ' + os.path.join(training_data_path, training_data_fn))
-
-    # -----Adjust dataframe data types
-    training_full_df['Date'] = pd.to_datetime(training_full_df['Date'])
-    training_full_df[['O1Region', 'O2Region']] = training_full_df[['O1Region', 'O2Region']].astype(float)
-
-    return training_full_df
-
-
-# --------------------------------------------------
-def subset_training_data(training_data_df, training_data_subset_path, training_data_subset_fn):
-    """
-
-    Parameters
-    ----------
-    training_data_df: pandas.DataFrame
-        full snowlines training data
-    training_data_subset_path: str
-        path in directory where training data subset will be saved
-    training_data_subset_fn: str
-        file name of training data subset
-
-    Returns
-    -------
-    training_data_subset_df: pandas.DataFrame
-        subset training data
-    """
-
-    # -----Check if training data exist in directory
-    if os.path.exists(os.path.join(training_data_subset_path, training_data_subset_fn)):
-        print('Training data subset exists in directory, loading...')
-        training_data_subset_df = pd.read_csv(os.path.join(training_data_subset_path, training_data_subset_fn))
-    else:
-        print('Constructing training data subset...')
-
-        # -----Grab all unique subregions in RGI outlines
-        unique_subregion_counts = training_data_df[['O1Region', 'O2Region']].value_counts().reset_index(name='count')
-        unique_subregion_counts = unique_subregion_counts.sort_values(by=['O1Region', 'O2Region']).reset_index(drop=True)
-        unique_subregions = unique_subregion_counts[['O1Region', 'O2Region']].values
-
-        # -----Iterate over unique subregions
-        training_data_subset_df = pd.DataFrame()
-        for o1region, o2region in unique_subregions:
-            # grab snowlines with matching names
-            snowlines_subregion = training_data_df.loc[(training_data_df['O1Region'] == o1region)
-                                                       & (training_data_df['O2Region'] == o2region)]
-            # determine subregion name and color for plotting
-            subregion_name, color = determine_subregion_name_color(o1region, o2region)
-            print(subregion_name)
-
-            # Calculate median and quartiles for weekly trends
-            q1, q3 = 0.25, 0.75
-            # set datetime as index
-            snowlines_subregion.index = snowlines_subregion['Date']
-            # add week of year and year columns
-            snowlines_subregion.loc[:, 'Week'] = snowlines_subregion['Date'].dt.isocalendar().week
-            snowlines_subregion.loc[:, 'Year'] = snowlines_subregion['Date'].dt.isocalendar().year.values
-            # calculate weekly median trend
-            weekly = snowlines_subregion.groupby(by='Week')['AAR'].agg(
-                ['median', lambda x: x.quantile(q1), lambda x: x.quantile(q3)])
-            weekly.columns = ['Median', 'Q1', 'Q3']  # Rename the columns for clarity
-            weekly.index = weekly.index.astype(float)
-            # calculate median AAR for minimum AAR week at each site
-            i_min_week = np.argwhere(weekly['Median'].values == np.nanmin(weekly['Median'].values))[0][0]
-            min_week = weekly.index.values[i_min_week]
-
-            # Calculate median AAR for minimum week at all sites
-            site_names = snowlines_subregion['site_name'].drop_duplicates().values
-            for site_name in tqdm(site_names):
-                # subset snowlines to site
-                snowlines_site = snowlines_subregion.loc[snowlines_subregion['site_name'] == site_name]
-                # grab rows for minimum AAR week
-                snowlines_site_week = snowlines_site.loc[snowlines_site['Week'] == min_week]
-                # concatenate to full dataframe
-                training_data_subset_df = pd.concat([training_data_subset_df, snowlines_site_week])
-
-        # save training data subset to file
-        training_data_subset_df.reset_index(drop=True, inplace=True)
-        training_data_subset_df.to_csv(os.path.join(training_data_subset_path, training_data_subset_fn), index=False)
-        print('Training data subset saved to file: ' + os.path.join(training_data_subset_path, training_data_subset_fn))
-
-    return training_data_subset_df
-
-
-# --------------------------------------------------
-def determine_subregion_name_color(o1, o2):
-    if (o1 == 1.0) and (o2 == 1.0):
-        subregion_name, color = 'Brooks Range', 'c'
-    elif (o1 == 1.0) and (o2 == 2.0):
-        subregion_name, color = 'Alaska Range', '#1f78b4'
-    elif (o1 == 1.0) and (o2 == 3.0):
-        subregion_name, color = 'Aleutians', '#6d9c43'
-    elif (o1 == 1.0) and (o2 == 4.0):
-        subregion_name, color = 'W. Chugach Mtns.', '#264708'
-    elif (o1 == 1.0) and (o2 == 5.0):
-        subregion_name, color = 'St. Elias Mtns.', '#fb9a99'
-    elif (o1 == 1.0) and (o2 == 6.0):
-        subregion_name, color = 'N. Coast Ranges', '#e31a1c'
-    elif (o1 == 2.0) and (o2 == 1.0):
-        subregion_name, color = 'N. Rockies', '#cab2d6'
-    elif (o1 == 2.0) and (o2 == 2.0):
-        subregion_name, color = 'N. Cascades', '#fdbf6f'
-    elif (o1 == 2.0) and (o2 == 3.0):
-        subregion_name, color = 'C. Rockies', '#9657d9'
-    elif (o1 == 2.0) and (o2 == 4.0):
-        subregion_name, color = 'S. Cascades', '#ff7f00'
-    elif (o1 == 2.0) and (o2 == 5.0):
-        subregion_name, color = 'S. Rockies', '#6a3d9a'
-    else:
-        subregion_name = 'O1:' + o1 + ' O2:' + o2
-        color = 'k'
-
-    return subregion_name, color
-
-
-# --------------------------------------------------
 def determine_best_model(data, models, model_names, feature_columns, labels, out_path,
                          best_model_fn='best_model.joblib', save_performances=False,
                          performances_fn='model_performances.csv', num_folds=10):
@@ -461,8 +299,6 @@ def determine_best_model(data, models, model_names, feature_columns, labels, out
 
         # display performance results
         print('    Mean absolute error = ' + str(mean_abs_err[i]))
-
-    print(' ')
 
     # -----Save performances from all models
     if save_performances:
