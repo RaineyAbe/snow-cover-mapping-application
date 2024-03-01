@@ -79,6 +79,90 @@ def determine_subregion_name_color(o1, o2):
 
 
 # --------------------------------------------------
+def adjust_data_vars(dem_xr):
+    """
+    Adjust DEM variables, such that the resulting DEM has one band called "elevation"
+
+    Parameters
+    ----------
+    dem_xr
+
+    Returns
+    ----------
+    dem_xr
+    
+    """
+    
+    if 'band_data' in dem_xr.data_vars:
+        dem_xr = dem_xr.rename({'band_data': 'elevation'})
+    if 'band' in dem_xr.dims:
+        elev_data = dem_xr.elevation.data[0]
+        dem_xr = dem_xr.drop_dims('band')
+        dem_xr['elevation'] = (('y', 'x'), elev_data)
+    return dem_xr
+
+
+# --------------------------------------------------
+def calculate_hypsometric_index(dem_fn, aoi):
+    """
+    Calculate Hypsometric Index using an input DEM file name and area of interest shapefile. 
+    Based on Jiskoot et al. (2009): https://doi.org/10.3189/172756410790595796
+
+    Parameters
+    ----------
+    dem_fn
+
+    aoi
+
+    Returns
+    ----------
+    hi
+
+    hi_category
+    """
+    
+    # load DEM as DataArray
+    dem = rxr.open_rasterio(dem_fn)
+    # reproject DEM to AOI CRS
+    dem = dem.rio.reproject('EPSG:'+str(aoi.crs.to_epsg()))
+    # clip DEM to AOI
+    try:
+        dem_aoi = dem.rio.clip(aoi.geometry, aoi.crs)
+    except:
+        return 'N/A', 'N/A'
+    # convert to dataset
+    dem_aoi_ds = dem_aoi.to_dataset(name='elevation')
+    # adjust DEM data variables
+    dem_aoi_ds = adjust_data_vars(dem_aoi_ds)
+    # set no data values to NaN
+    dem_aoi_ds = xr.where((dem_aoi_ds > 1e38) | (dem_aoi_ds <= -9999), np.nan, dem_aoi_ds)
+    # check that there is data after removing no data values
+    if np.isnan(dem_aoi_ds.elevation.data).all():
+        return 'N/A', 'N/A'
+    # calculate elevation statistics
+    h_max = np.nanmax(np.ravel(dem_aoi_ds.elevation.data))
+    h_min = np.nanmin(np.ravel(dem_aoi_ds.elevation.data))
+    h_med = np.nanmedian(np.ravel(dem_aoi_ds.elevation.data))
+    # calculate HI, where HI = (H_max - H_med) / (H_med - H_min). If 0 < HI < 1, HI = -1/HI.
+    hi = (h_max - h_med) / (h_med - h_min)
+    if (0 < hi) and (hi < 1):
+        hi = -1 / hi
+    # determine HI category
+    if hi <= -1.5:
+        hi_category = 'Very top heavy'
+    elif (hi > -1.5) and (hi <= -1.2):
+        hi_category = 'Top heavy'
+    elif (hi > -1.2) and (hi <= 1.2):
+        hi_category = 'Equidimensional'
+    elif (hi > 1.2) and (hi <= 1.5):
+        hi_category = 'Bottom heavy'
+    elif hi > 1.5:
+        hi_category = 'Very bottom heavy'
+
+    return hi, hi_category
+
+
+# --------------------------------------------------
 def construct_site_training_data(study_sites_path, site_name, dem):
     """
 
@@ -409,3 +493,60 @@ def assess_model_feature_importances(model, X, y, feature_columns, feature_colum
         print('Variable out_path not valid path in directory, not saving output dataframe...')
 
     return feature_importances
+
+
+# --------------------------------------------------
+def reduce_memory_usage(df, verbose=True):
+    """
+    Reduce memory usage in pandas.DataFrame
+    From Bex T (2021): https://towardsdatascience.com/6-pandas-mistakes-that-silently-tell-you-are-a-rookie-b566a252e60d
+
+    Parameters
+    ----------
+    df: pandas.DataFrame
+        input dataframe
+    verbose: bool
+        whether to output verbage (default=True)
+
+    Returns
+    ----------
+    df: pandas.DataFrame
+        output dataframe with reduced memory usage
+    """
+    numerics = ["int8", "int16", "int32", "int64", "float16", "float32", "float64"]
+    start_mem = df.memory_usage().sum() / 1024 ** 2
+    for col in df.columns:
+        col_type = df[col].dtypes
+        if col_type in numerics:
+            c_min = df[col].min()
+            c_max = df[col].max()
+            if str(col_type)[:3] == "int":
+                if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max:
+                    df[col] = df[col].astype(np.int8)
+                elif c_min > np.iinfo(np.int16).min and c_max < np.iinfo(np.int16).max:
+                    df[col] = df[col].astype(np.int16)
+                elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
+                    df[col] = df[col].astype(np.int32)
+                elif c_min > np.iinfo(np.int64).min and c_max < np.iinfo(np.int64).max:
+                    df[col] = df[col].astype(np.int64)
+            else:
+                #                if (
+                #                    c_min > np.finfo(np.float16).min
+                #                    and c_max < np.finfo(np.float16).max
+                #                ):
+                #                    df[col] = df[col].astype(np.float16) # float16 not compatible with linalg
+                if (  # elif (
+                        c_min > np.finfo(np.float32).min
+                        and c_max < np.finfo(np.float32).max
+                ):
+                    df[col] = df[col].astype(np.float32)
+                else:
+                    df[col] = df[col].astype(np.float64)
+    end_mem = df.memory_usage().sum() / 1024 ** 2
+    if verbose:
+        print(
+            "pandas.DataFrame memory usage decreased to {:.2f} Mb ({:.1f}% reduction)".format(
+                end_mem, 100 * (start_mem - end_mem) / start_mem
+            )
+        )
+    return df
