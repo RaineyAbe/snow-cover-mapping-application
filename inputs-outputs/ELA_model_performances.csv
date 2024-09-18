@@ -1,7 +1,0 @@
-Model,Mean absolute error,Mean squared error,Mean absolute percentage error,Maximum error,R^2
-Decision Tree Regression,0.106,0.021,0.293,0.470,0.293
-Gradient Boosting Regression,0.106,0.021,0.351,0.464,0.351
-Linear Regression,0.152,0.038,-0.052,0.474,-0.052
-Random Forest Regression,0.104,0.020,0.332,0.452,0.332
-Ridge Regression,0.152,0.038,-0.052,0.474,-0.052
-Support Vector Regression,0.155,0.039,0.073,0.495,0.073
