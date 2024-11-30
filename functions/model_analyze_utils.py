@@ -20,7 +20,6 @@ import matplotlib.pyplot as plt
 import sklearn
 
 
-# --------------------------------------------------
 def convert_wgs_to_utm(lon: float, lat: float):
     """
     Return best UTM epsg-code based on WGS84 lat and lon coordinate pair
@@ -47,7 +46,6 @@ def convert_wgs_to_utm(lon: float, lat: float):
     return epsg_code
 
 
-# --------------------------------------------------
 def determine_subregion_name_color(o1, o2):
     if (o1 == 1.0) and (o2 == 1.0):
         subregion_name, color = 'Brooks Range', 'c'
@@ -78,7 +76,6 @@ def determine_subregion_name_color(o1, o2):
     return subregion_name, color
 
 
-# --------------------------------------------------
 def adjust_data_vars(dem_xr):
     """
     Adjust DEM variables, such that the resulting DEM has one band called "elevation"
@@ -102,7 +99,6 @@ def adjust_data_vars(dem_xr):
     return dem_xr
 
 
-# --------------------------------------------------
 def calculate_hypsometric_index(dem_fn, aoi):
     """
     Calculate Hypsometric Index using an input DEM file name and area of interest shapefile. 
@@ -162,7 +158,6 @@ def calculate_hypsometric_index(dem_fn, aoi):
     return hi, hi_category
 
 
-# --------------------------------------------------
 def construct_site_training_data(study_sites_path, site_name, dem):
     """
 
@@ -287,7 +282,6 @@ def construct_site_training_data(study_sites_path, site_name, dem):
     return training_df
 
 
-# --------------------------------------------------
 def determine_best_model(data, models, model_names, feature_columns, labels, out_path,
                          best_model_fn='best_model.joblib', save_performances=False,
                          performances_fn='model_performances.csv', num_folds=10):
@@ -410,7 +404,6 @@ def determine_best_model(data, models, model_names, feature_columns, labels, out
     return best_model_retrained, X, y
 
 
-# --------------------------------------------------
 def assess_model_feature_importances(model, X, y, feature_columns, feature_columns_display=None, out_path=None,
                                      importances_fn='model_feature_importances.csv', figure_out_path=None,
                                      figure_fn='model_feature_importances.png', n_repeats=100, random_state=42):
@@ -495,7 +488,6 @@ def assess_model_feature_importances(model, X, y, feature_columns, feature_colum
     return feature_importances
 
 
-# --------------------------------------------------
 def reduce_memory_usage(df, verbose=True):
     """
     Reduce memory usage in pandas.DataFrame

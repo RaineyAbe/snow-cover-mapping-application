@@ -30,7 +30,6 @@ import ipywidgets as widgets
 from IPython.display import display, HTML
 
 
-# --------------------------------------------------
 def convert_wgs_to_utm(lon: float, lat: float):
     """
     Return best UTM epsg-code based on WGS84 lat and lon coordinate pair
@@ -57,7 +56,6 @@ def convert_wgs_to_utm(lon: float, lat: float):
     return epsg_code
 
 
-# --------------------------------------------------
 def plot_xr_rgb_image(im_xr, rgb_bands):
     """Plot RGB image of xarray.DataSet
 
@@ -107,7 +105,6 @@ def plot_xr_rgb_image(im_xr, rgb_bands):
     return fig, ax
 
 
-# --------------------------------------------------
 def query_gee_for_dem(aoi_utm, base_path, site_name, out_path=None):
     """
     Query GEE for the ASTER Global DEM, clip to the AOI, and return as a numpy array.
@@ -208,7 +205,6 @@ def query_gee_for_dem(aoi_utm, base_path, site_name, out_path=None):
     return dem_ds
 
 
-# --------------------------------------------------
 def query_gee_for_imagery(dataset_dict, dataset, aoi_utm, date_start, date_end, month_start, month_end,
                           cloud_cover_max, mask_clouds, out_path=None, im_download=False):
     """
@@ -458,7 +454,6 @@ def query_gee_for_imagery(dataset_dict, dataset, aoi_utm, date_start, date_end, 
     return im_xr_list
 
 
-# --------------------------------------------------
 def planetscope_mask_image_pixels(im_path, im_fn, out_path, save_outputs, plot_results):
     """
     Mask PlanetScope 4-band image pixels using the Usable Data Mask (UDM) file associated with each image.
@@ -543,7 +538,6 @@ def planetscope_mask_image_pixels(im_path, im_fn, out_path, save_outputs, plot_r
         plt.show()
 
 
-# --------------------------------------------------
 def planetscope_mosaic_images_by_date(im_path, im_fns, out_path, aoi):
     """
     Mosaic PlanetScope images captured within the same hour using gdal_merge.py.
@@ -626,7 +620,6 @@ def planetscope_mosaic_images_by_date(im_path, im_fns, out_path, aoi):
                 subprocess.run(cmd, shell=True, capture_output=True)
 
 
-# --------------------------------------------------
 def create_aoi_elev_polys(aoi, dem):
     """
     Function to generate a polygon of the top and bottom 20th percentile elevations
@@ -694,7 +687,6 @@ def create_aoi_elev_polys(aoi, dem):
     return polygons_top, polygons_bottom
 
 
-# --------------------------------------------------
 def planetscope_adjust_image_radiometry(im_xr, im_dt, polygon_top, polygon_bottom, dataset_dict, skip_clipped):
     """
     Adjust PlanetScope image band radiometry using the band values in a defined snow-covered area (SCA) and the expected surface reflectance of snow.
@@ -873,7 +865,6 @@ def planetscope_adjust_image_radiometry(im_xr, im_dt, polygon_top, polygon_botto
     return im_adj, im_adj_method
 
 
-# --------------------------------------------------
 def classify_image(im_xr, clf, feature_cols, crop_to_aoi, aoi, dem, dataset_dict, dataset, im_classified_fn, out_path,
                    verbose=False):
     """
@@ -1002,7 +993,6 @@ def classify_image(im_xr, clf, feature_cols, crop_to_aoi, aoi, dem, dataset_dict
     return im_classified_xr
 
 
-# --------------------------------------------------
 def delineate_image_snowline(im_xr, im_classified, site_name, aoi, dataset_dict, dataset, im_date, snowline_fn,
                              out_path, figures_out_path, plot_results):
     """
@@ -1343,7 +1333,6 @@ def delineate_image_snowline(im_xr, im_classified, site_name, aoi, dataset_dict,
     return snowline_df
 
 
-# --------------------------------------------------
 def query_gee_for_modis_sr(aoi, date_start, date_end, month_start, month_end, cloud_cover_max, ds_dict):
     """
     Query Google Earth Engine for MODIS surface reflectance (SR) imagery from the Terra platform.
@@ -1416,7 +1405,6 @@ def query_gee_for_modis_sr(aoi, date_start, date_end, month_start, month_end, cl
     return m_xr
 
 
-# --------------------------------------------------
 def reduce_memory_usage(df, verbose=True):
     """
     Reduce memory usage in pandas.DataFrame
